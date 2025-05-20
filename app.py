@@ -1,209 +1,177 @@
 import streamlit as st
-import tensorflow as tf
 import numpy as np
 from PIL import Image
+from ultralytics import YOLO
+import io
+import requests
 
 st.set_page_config(page_title="Dự đoán bệnh lá cà chua", layout="wide")
-st.title("🧪 Dự đoán bệnh lá Cà Chua qua ảnh")
+st.title("🧪 Chẩn đoán bệnh trên lá Cà Chua qua ảnh (YOLOv8)") # Tiêu đề cập nhật
 st.write(
-    "Tải lên ảnh lá cà chua, hệ thống sẽ tự động phân tích bệnh và đưa ra gợi ý. "
-    "Lưu ý: Model chuyên dùng cho lá cà chua và có thể cho kết quả không chính xác với các loại ảnh khác."
+    "Tải lên ảnh lá cà chua hoặc nhập URL ảnh. Hệ thống sẽ phân tích và cung cấp thông tin chi tiết về bệnh (nếu có), "
+    "bao gồm dấu hiệu nhận dạng, tên khoa học, và các biện pháp quản lý tham khảo."
 )
 
+# ÁNH XẠ TÊN LỚP (Giữ nguyên)
+TURKISH_TO_ENGLISH_CLASS_MAP = {
+    'Erken yaniklik': 'Early_blight',
+    'Gec yaniklik': 'Late_blight',
+    'Mozaik Virusu': 'Tomato_mosaic_virus',
+    'Orumcek akarlari': 'Spider_mites Two-spotted_spider_mite',
+    'Saglikli': 'healthy',
+    'Sari Yaprak Kivrilma Virusu': 'Tomato_Yellow_Leaf_Curl_Virus',
+    'Septorya': 'Septoria_leaf_spot',
+    'Yaprak Kufu': 'Leaf_Mold',
+    'Yaprak madencisi': 'Leaf_miner'
+}
 
-# THÔNG TIN BỆNH VÀ CÁCH XỬ LÝ 
-
+# THÔNG TIN BỆNH VÀ CÁCH XỬ LÝ
+# *** QUAN TRỌNG: Bạn cần tự điền thông tin chi tiết và chính xác cho 'identification_signs' của TẤT CẢ các bệnh ***
 disease_info = {
     'Bacterial_spot': {
-        'scientific_name_en': "Xanthomonas spp. (e.g., X. campestris pv. vesicatoria)",
-        'vietnamese_name': "Bệnh đốm khuẩn (do Xanthomonas spp.)",
-        'remedies': [
-            "Sử dụng thuốc trừ bệnh gốc Đồng (ví dụ: Copper Oxychloride, Copper Hydroxide) theo nồng độ khuyến cáo.",
-            "Trong trường hợp áp lực bệnh cao, có thể xem xét sử dụng kháng sinh chuyên dùng (ví dụ: Streptomycin, Kasugamycin) nhưng phải tuân thủ nghiêm ngặt liều lượng, thời gian cách ly và chỉ sử dụng khi thực sự cần thiết để tránh kháng thuốc."
+        'scientific_name_en': "Xanthomonas spp.",
+        'vietnamese_name': "Bệnh đốm khuẩn",
+        'identification_signs': [
+            "Đốm nhỏ, sũng nước, màu xanh đậm đến đen trên lá, thường có viền vàng.",
+            "Các đốm có thể liên kết lại thành mảng lớn, làm lá bị rách hoặc biến dạng.",
+            "Trên quả, vết bệnh nổi gờ, màu nâu đen, có vảy."
+            # Thêm các dấu hiệu khác nếu có
         ],
-        'actions': [
-            "Vệ sinh đồng ruộng: Thu gom và tiêu hủy ngay các bộ phận cây bị bệnh (lá, cành, quả).",
-            "Luân canh cây trồng: Không trồng cà chua hoặc các cây cùng họ (ớt, khoai tây) trên cùng một chân đất trong ít nhất 2-3 năm.",
-            "Giống kháng bệnh: Ưu tiên chọn giống cà chua có khả năng kháng bệnh đốm khuẩn.",
-            "Quản lý tưới tiêu: Tránh tưới nước trực tiếp lên lá, đặc biệt vào buổi chiều tối. Giữ cho bề mặt lá khô ráo.",
-            "Khử trùng dụng cụ: Thường xuyên vệ sinh và khử trùng các dụng cụ làm vườn (dao, kéo, cuốc).",
-            "Mật độ trồng hợp lý: Trồng với mật độ vừa phải để đảm bảo độ thông thoáng cho vườn cây."
-        ]
+        'remedies': ["Sử dụng thuốc trừ bệnh gốc Đồng (Copper Oxychloride, Copper Hydroxide).", "Xem xét kháng sinh chuyên dùng (Streptomycin, Kasugamycin) khi áp lực bệnh rất cao và tuân thủ nghiêm ngặt hướng dẫn."],
+        'actions': ["Thu gom và tiêu hủy bộ phận cây bị bệnh.", "Luân canh cây trồng (tránh họ cà 2-3 năm).", "Chọn giống kháng bệnh.", "Tránh tưới lên lá, giữ lá khô ráo.", "Khử trùng dụng cụ làm vườn."]
     },
     'Early_blight': {
         'scientific_name_en': "Alternaria solani",
-        'vietnamese_name': "Bệnh cháy sớm (do Alternaria solani)",
-        'remedies': [
-            "Sử dụng thuốc trừ nấm có hoạt chất Mancozeb, Chlorothalonil khi bệnh mới xuất hiện.",
-            "Các hoạt chất Azoxystrobin, Difenoconazole cũng cho hiệu quả tốt. Nên luân phiên thuốc để tránh kháng thuốc.",
-            "Phun thuốc kỹ cả hai mặt lá và phun nhắc lại theo hướng dẫn của nhà sản xuất."
+        'vietnamese_name': "Bệnh cháy sớm (Đốm vòng)",
+        'identification_signs': [
+            "Vết bệnh hình tròn hoặc góc cạnh, màu nâu sẫm, có các vòng tròn đồng tâm đặc trưng như 'bia bắn'.",
+            "Thường xuất hiện ở các lá già phía dưới trước, sau đó lan dần lên trên.",
+            "Lá bị bệnh nặng sẽ vàng, khô và rụng sớm.",
+            "Trên thân và cuống lá có thể có vết bệnh hình bầu dục, màu nâu đen."
         ],
-        'actions': [
-            "Vệ sinh đồng ruộng: Dọn sạch tàn dư cây trồng vụ trước, đặc biệt là những cây bị bệnh.",
-            "Thoát nước tốt: Đảm bảo ruộng cà chua không bị úng nước, nhất là trong mùa mưa.",
-            "Luân canh cây trồng: Thực hiện luân canh với các cây trồng khác họ.",
-            "Bón phân cân đối: Tránh bón thừa đạm (N), tăng cường bón kali (K) và canxi (Ca) để cây cứng cáp.",
-            "Cắt tỉa lá bệnh: Tỉa bỏ các lá già, lá bị bệnh ở gốc để giảm nguồn bệnh và tạo độ thông thoáng."
-        ]
+        'remedies': ["Phun thuốc trừ nấm chứa hoạt chất Mancozeb, Chlorothalonil khi bệnh mới xuất hiện.", "Các hoạt chất Azoxystrobin, Difenoconazole cũng hiệu quả; nên luân phiên thuốc."],
+        'actions': ["Dọn sạch tàn dư cây trồng vụ trước.", "Đảm bảo ruộng thoát nước tốt, tránh úng ngập.", "Luân canh với cây trồng khác họ.", "Bón phân cân đối, tránh thừa đạm, tăng cường Kali và Canxi.", "Cắt tỉa lá già, lá bệnh ở gốc."]
     },
     'Late_blight': {
         'scientific_name_en': "Phytophthora infestans",
-        'vietnamese_name': "Bệnh sương mai (do Phytophthora infestans)",
-        'remedies': [
-            "Phun thuốc phòng trừ khi thời tiết thuận lợi cho bệnh phát triển (ẩm độ cao, mưa nhiều, có sương mù), đặc biệt ở giai đoạn cây ra hoa, đậu quả.",
-            "Sử dụng các loại thuốc có hoạt chất như: Mancozeb + Metalaxyl, Cymoxanil + Mancozeb, Propamocarb, Dimethomorph.",
-            "Luân phiên các nhóm thuốc khác nhau để hạn chế sự hình thành tính kháng của nấm bệnh."
+        'vietnamese_name': "Bệnh sương mai (Mốc sương)",
+        'identification_signs': [
+            "Trên lá xuất hiện các đốm màu xanh xám, úng nước, sau đó lớn dần và chuyển sang nâu đen.",
+            "Ở mặt dưới lá, tại rìa vết bệnh, có thể thấy lớp mốc trắng xốp khi thời tiết ẩm ướt.",
+            "Bệnh phát triển rất nhanh, có thể làm toàn bộ lá, thân cây bị thối nhũn và chết rũ.",
+            "Trên quả, vết bệnh màu nâu, cứng, lan sâu vào thịt quả."
         ],
-        'actions': [
-            "Chọn giống kháng: Sử dụng giống cà chua có khả năng kháng bệnh sương mai.",
-            "Mật độ trồng: Trồng thưa, hợp lý để vườn luôn thông thoáng.",
-            "Quản lý nước: Thoát nước tốt cho ruộng, tránh để nước đọng lại sau mưa hoặc tưới.",
-            "Vệ sinh vườn: Tiêu hủy kịp thời những cây, lá bị bệnh nặng.",
-            "Luân canh: Không trồng cà chua liên tục nhiều năm trên một thửa ruộng."
-        ]
+        'remedies': ["Phun thuốc phòng trừ chủ động khi thời tiết thuận lợi cho bệnh (ẩm, mưa nhiều, sương mù).", "Sử dụng thuốc có hoạt chất: Mancozeb + Metalaxyl, Cymoxanil + Mancozeb, Propamocarb, Dimethomorph.", "Luân phiên thuốc để tránh kháng."],
+        'actions': ["Chọn giống kháng bệnh.", "Trồng với mật độ hợp lý, đảm bảo thông thoáng.", "Quản lý nước tốt, tránh đọng nước.", "Tiêu hủy kịp thời cây, lá bị bệnh nặng.", "Luân canh nghiêm ngặt."]
     },
     'Leaf_Mold': {
         'scientific_name_en': "Fulvia fulva (syn. Cladosporium fulvum)",
-        'vietnamese_name': "Bệnh mốc lá (do Fulvia fulva)",
-        'remedies': [
-            "Sử dụng thuốc trừ nấm gốc Đồng, hoặc các hoạt chất như Chlorothalonil, Azoxystrobin, Trifloxystrobin.",
-            "Phun thuốc kỹ vào mặt dưới của lá, nơi nấm bệnh thường phát triển mạnh."
+        'vietnamese_name': "Bệnh mốc lá",
+        'identification_signs': [
+            "Mặt trên lá xuất hiện các đốm màu vàng nhạt hoặc xanh nhạt, không rõ ràng.",
+            "Mặt dưới lá, tương ứng với các đốm đó, là lớp nấm mốc màu xanh ôliu đến nâu nhạt, mịn như nhung.",
+            "Lá bị bệnh nặng có thể cong lại, vàng và khô héo."
         ],
-        'actions': [
-            "Thông gió: Đảm bảo độ thông thoáng tốt, đặc biệt quan trọng trong điều kiện nhà kính hoặc nhà lưới.",
-            "Kiểm soát độ ẩm: Giảm độ ẩm không khí bằng cách tưới nước hợp lý, tránh tưới vào buổi chiều tối.",
-            "Cắt tỉa: Loại bỏ lá già, lá gốc và những lá bị bệnh để giảm nguồn lây nhiễm.",
-            "Vệ sinh: Dọn dẹp tàn dư thực vật bị bệnh."
-        ]
+        'remedies': ["Sử dụng thuốc trừ nấm gốc Đồng, Chlorothalonil, Azoxystrobin, Trifloxystrobin.", "Phun kỹ mặt dưới lá."],
+        'actions': ["Đảm bảo thông gió tốt, đặc biệt trong nhà kính/nhà lưới.", "Kiểm soát độ ẩm không khí, tránh tưới chiều tối.", "Cắt tỉa lá già, lá gốc và lá bệnh.", "Vệ sinh tàn dư thực vật."]
     },
     'Septoria_leaf_spot': {
         'scientific_name_en': "Septoria lycopersici",
-        'vietnamese_name': "Bệnh đốm lá Septoria (do Septoria lycopersici)",
-        'remedies': [
-            "Phun thuốc trừ nấm chứa hoạt chất Chlorothalonil, Mancozeb khi triệu chứng bệnh xuất hiện.",
-            "Thuốc gốc Đồng cũng có tác dụng phòng trừ nhất định."
+        'vietnamese_name': "Bệnh đốm lá Septoria",
+        'identification_signs': [
+            "Đốm bệnh nhỏ, tròn, màu nâu xám hoặc nâu nhạt, có tâm màu trắng hoặc xám tro.",
+            "Trong các đốm bệnh già có thể thấy các chấm đen nhỏ li ti (bào tử của nấm).",
+            "Bệnh thường bắt đầu từ lá dưới và lan dần lên, làm lá vàng, khô và rụng hàng loạt."
         ],
-        'actions': [
-            "Tiêu hủy lá bệnh: Thu gom và tiêu hủy các lá bị nhiễm bệnh để giảm thiểu sự lây lan.",
-            "Vệ sinh đồng ruộng: Giữ cho vườn cà chua sạch sẽ, không có tàn dư cây bệnh.",
-            "Luân canh: Áp dụng chế độ luân canh cây trồng ít nhất 1-2 năm với cây không phải là ký chủ của nấm Septoria.",
-            "Phương pháp tưới: Ưu tiên tưới gốc, tránh tưới phun lên lá làm ẩm lá kéo dài.",
-            "Dinh dưỡng: Bón phân cân đối, tăng cường phân hữu cơ và kali để cây khỏe mạnh, tăng sức đề kháng."
-        ]
+        'remedies': ["Phun thuốc trừ nấm chứa Chlorothalonil, Mancozeb.", "Thuốc gốc Đồng có tác dụng phòng trừ."],
+        'actions': ["Thu gom và tiêu hủy lá bệnh.", "Giữ vườn sạch sẽ.", "Luân canh ít nhất 1-2 năm.", "Ưu tiên tưới gốc.", "Bón phân cân đối, tăng cường hữu cơ và kali."]
     },
     'Spider_mites Two-spotted_spider_mite': {
         'scientific_name_en': "Tetranychus urticae",
-        'vietnamese_name': "Nhện đỏ hai chấm (Tetranychus urticae)",
-        'remedies': [
-            "Sử dụng thuốc đặc trị nhện như Abamectin, Emamectin Benzoate, Spiromesifen, Hexythiazox.",
-            "Có thể dùng các sản phẩm sinh học như dầu khoáng, nấm ký sinh (Beauveria bassiana, Metarhizium anisopliae).",
-            "Phun kỹ mặt dưới lá, nơi nhện thường tập trung. Phun lặp lại sau 5-7 ngày nếu mật độ nhện cao."
+        'vietnamese_name': "Nhện đỏ hai chấm",
+        'identification_signs': [
+            "Lá bị hại có những chấm nhỏ li ti màu vàng hoặc trắng bạc do nhện chích hút dịch.",
+            "Mặt dưới lá có thể thấy tơ nhện mỏng và các con nhện nhỏ li ti (cần kính lúp để thấy rõ).",
+            "Lá bị nặng có thể chuyển vàng, khô và rụng. Ngọn cây có thể bị chùn lại."
         ],
-        'actions': [
-            "Biện pháp cơ học: Phun nước mạnh vào mặt dưới lá (khi mật độ nhện còn thấp) để rửa trôi nhện.",
-            "Bảo tồn thiên địch: Tạo điều kiện cho các loài thiên địch của nhện phát triển (ví dụ: bọ rùa, bọ cánh gân, nhện bắt mồi).",
-            "Vệ sinh vườn: Cắt tỉa và tiêu hủy các lá, cành bị nhện hại nặng.",
-            "Tránh khô hạn: Duy trì độ ẩm thích hợp cho vườn, vì nhện đỏ thường phát triển mạnh trong điều kiện khô nóng."
-        ]
+        'remedies': ["Thuốc đặc trị nhện: Abamectin, Emamectin Benzoate, Spiromesifen, Hexythiazox.", "Sản phẩm sinh học: dầu khoáng, nấm Beauveria bassiana.", "Phun kỹ mặt dưới lá, lặp lại nếu cần."],
+        'actions': ["Phun nước mạnh vào mặt dưới lá (khi mật độ thấp).", "Bảo tồn thiên địch (bọ rùa, nhện bắt mồi).", "Cắt tỉa và tiêu hủy lá, cành bị hại nặng.", "Duy trì độ ẩm thích hợp (nhện phát triển mạnh khi khô nóng)."]
     },
     'Target_Spot': {
         'scientific_name_en': "Corynespora cassiicola",
-        'vietnamese_name': "Bệnh đốm mắt cua (do Corynespora cassiicola)",
-        'remedies': [
-            "Sử dụng thuốc trừ nấm có hoạt chất Chlorothalonil, Mancozeb.",
-            "Các thuốc nhóm Strobilurin (ví dụ: Azoxystrobin, Pyraclostrobin) cũng cho thấy hiệu quả tốt."
+        'vietnamese_name': "Bệnh đốm mắt cua",
+        'identification_signs': [
+            "Vết bệnh trên lá có hình tròn hoặc không đều, màu nâu, thường có các vòng đồng tâm nhưng không rõ như bệnh cháy sớm.",
+            "Tâm vết bệnh có thể bị thủng.",
+            "Trên quả, vết bệnh lõm xuống, màu nâu sẫm."
+            # Thêm các dấu hiệu khác
         ],
-        'actions': [
-            "Vệ sinh: Thu dọn và tiêu hủy tàn dư cây bệnh từ vụ trước.",
-            "Thông thoáng: Đảm bảo vườn trồng thông thoáng, tránh ẩm độ cao kéo dài.",
-            "Luân canh: Thực hiện luân canh với các cây trồng không phải là ký chủ của nấm.",
-            "Dinh dưỡng: Bón phân cân đối, không bón thừa đạm."
-        ]
+        'remedies': ["Sử dụng thuốc trừ nấm có hoạt chất Chlorothalonil, Mancozeb.", "Các thuốc nhóm Strobilurin (ví dụ: Azoxystrobin, Pyraclostrobin) cũng cho thấy hiệu quả tốt."],
+        'actions': ["Thu dọn và tiêu hủy tàn dư cây bệnh từ vụ trước.", "Đảm bảo vườn trồng thông thoáng, tránh ẩm độ cao kéo dài.", "Luân canh với các cây trồng không phải là ký chủ của nấm.", "Bón phân cân đối, không bón thừa đạm."]
     },
     'Tomato_Yellow_Leaf_Curl_Virus': {
         'scientific_name_en': "Tomato yellow leaf curl virus (TYLCV)",
-        'vietnamese_name': "Virus xoăn vàng lá cà chua (TYLCV)",
-        'remedies': [
-            "**Không có thuốc đặc trị bệnh virus.** Biện pháp chủ yếu là phòng trừ côn trùng môi giới.",
-            "Kiểm soát bọ phấn trắng (môi giới truyền bệnh): Sử dụng các hoạt chất như Imidacloprid, Thiamethoxam, Dinotefuran, Pymetrozin. Luân phiên thuốc để tránh kháng.",
-            "Sử dụng các biện pháp sinh học: Dầu khoáng, xà phòng côn trùng để giảm mật độ bọ phấn."
+        'vietnamese_name': "Virus xoăn vàng lá cà chua",
+        'identification_signs': [
+            "Lá non bị xoăn lại, vàng, mép lá cong lên trên hoặc vào trong.",
+            "Cây sinh trưởng còi cọc, lóng thân ngắn lại, lá nhỏ hơn bình thường.",
+            "Hoa có thể bị rụng, khả năng đậu quả kém, quả nhỏ và biến dạng."
         ],
-        'actions': [
-            "Nhổ bỏ và tiêu hủy: Phát hiện sớm và tiêu hủy ngay những cây có triệu chứng bệnh để ngăn chặn lây lan.",
-            "Giống kháng Virus: Ưu tiên sử dụng các giống cà chua có khả năng kháng hoặc chống chịu virus TYLCV.",
-            "Vệ sinh vườn: Diệt trừ cỏ dại xung quanh vườn, vì cỏ dại có thể là nơi trú ngụ của bọ phấn trắng.",
-            "Luân canh: Thực hiện luân canh với cây trồng không phải là ký chủ của virus và bọ phấn.",
-            "Nhà lưới/màng chắn: Sử dụng nhà lưới có mắt lưới nhỏ để ngăn chặn bọ phấn xâm nhập, đặc biệt trong giai đoạn cây con."
-        ]
+        'remedies': ["**Không có thuốc đặc trị bệnh virus.**", "Kiểm soát bọ phấn trắng (môi giới): Imidacloprid, Thiamethoxam, Pymetrozin (luân phiên).", "Dầu khoáng, xà phòng côn trùng để giảm mật độ bọ phấn."],
+        'actions': ["Nhổ bỏ và tiêu hủy ngay cây có triệu chứng.", "Sử dụng giống cà chua kháng hoặc chống chịu virus TYLCV.", "Diệt trừ cỏ dại (nơi trú ẩn của bọ phấn).", "Luân canh.", "Sử dụng nhà lưới mắt nhỏ ngăn bọ phấn, đặc biệt giai đoạn cây con."]
     },
     'Tomato_mosaic_virus': {
         'scientific_name_en': "Tomato mosaic virus (ToMV)",
-        'vietnamese_name': "Virus khảm lá cà chua (ToMV)",
-        'remedies': [
-            "**Không có thuốc đặc trị bệnh virus.** Tập trung vào các biện pháp phòng ngừa lây nhiễm.",
-            "Kiểm soát côn trùng môi giới (nếu có): Một số virus khảm có thể lây qua côn trùng, cần xác định và kiểm soát (ví dụ: rầy, rệp)."
+        'vietnamese_name': "Virus khảm lá cà chua",
+        'identification_signs': [
+            "Lá có những mảng màu xanh đậm xen kẽ với mảng màu xanh nhạt hoặc vàng (khảm mosaic).",
+            "Lá có thể bị biến dạng, nhăn nheo, kích thước nhỏ lại.",
+            "Cây sinh trưởng kém, năng suất giảm."
         ],
-        'actions': [
-            "Nhổ bỏ và tiêu hủy: Loại bỏ và tiêu hủy ngay cây bị bệnh.",
-            "Sử dụng giống kháng: Chọn giống có khả năng kháng virus ToMV.",
-            "Vệ sinh dụng cụ: Khử trùng dụng cụ (dao, kéo) thường xuyên bằng cồn y tế (>70%) hoặc dung dịch Javel khi làm việc giữa các cây, các luống.",
-            "Hạn chế tiếp xúc cơ học: Virus dễ lây qua vết thương cơ giới, hạn chế các hoạt động gây xây xát cho cây.",
-            "Không hút thuốc lá: Người làm vườn không nên hút thuốc lá khi đang làm việc với cây cà chua, vì virus ToMV có thể tồn tại trong thuốc lá và lây nhiễm sang cây."
-        ]
+        'remedies': ["**Không có thuốc đặc trị bệnh virus.** Tập trung phòng ngừa lây nhiễm."],
+        'actions': ["Nhổ bỏ và tiêu hủy cây bệnh.", "Sử dụng giống kháng.", "Khử trùng dụng cụ làm việc thường xuyên.", "Hạn chế gây vết thương cơ giới cho cây.", "Người làm vườn không hút thuốc lá khi làm việc với cà chua (virus có thể tồn tại trong thuốc lá)."]
     },
     'healthy': {
         'scientific_name_en': "N/A (Healthy Plant)",
         'vietnamese_name': "Cây khỏe mạnh",
+        'identification_signs': ["Lá xanh tốt, không có đốm bệnh, không biến dạng.", "Cây sinh trưởng bình thường, phát triển cân đối."],
         'remedies': ["Không cần xử lý thuốc bệnh. Tiếp tục duy trì các biện pháp chăm sóc tốt."],
-        'actions': [
-            "Chăm sóc định kỳ: Tưới nước đủ ẩm theo nhu cầu của cây, tránh để cây bị úng hoặc hạn hán.",
-            "Bón phân cân đối: Cung cấp đầy đủ và cân đối các chất dinh dưỡng đa, trung, vi lượng.",
-            "Thăm vườn thường xuyên: Quan sát cây hàng ngày để phát hiện sớm bất kỳ dấu hiệu bất thường nào của sâu bệnh.",
-            "Phòng ngừa tổng hợp: Tiếp tục áp dụng các biện pháp phòng ngừa chung như vệ sinh đồng ruộng, luân canh cây trồng (nếu có kế hoạch cho vụ sau), chọn giống tốt."
-        ]
+        'actions': ["Tưới nước đủ ẩm.", "Bón phân cân đối và đầy đủ.", "Thăm vườn thường xuyên để phát hiện sớm sâu bệnh.", "Áp dụng các biện pháp phòng ngừa chung (vệ sinh, luân canh, giống tốt)."]
+    },
+    'Leaf_miner': {
+        'scientific_name_en': "Liriomyza spp.",
+        'vietnamese_name': "Sâu vẽ bùa / Ruồi đục lá",
+        'identification_signs': [
+            "Trên lá xuất hiện các đường ngoằn ngoèo màu trắng bạc hoặc xám tro do ấu trùng (dòi) ăn phá biểu bì lá.",
+            "Đầu đường hầm có thể thấy chấm đen nhỏ (phân của sâu non).",
+            "Lá bị hại nặng có thể giảm khả năng quang hợp, vàng úa và rụng."
+        ],
+        'remedies': ["Sử dụng thuốc có hoạt chất Abamectin, Cyromazine, Spinetoram khi mật độ sâu cao.", "Dầu khoáng hoặc dầu neem.", "Đặt bẫy dính màu vàng để bắt ruồi trưởng thành."],
+        'actions': ["Ngắt bỏ và tiêu hủy lá bị sâu vẽ bùa nặng.", "Vệ sinh đồng ruộng, dọn sạch cỏ dại.", "Luân canh.", "Bảo vệ thiên địch (ong ký sinh)."]
     }
 }
 
-# THAM SỐ CẤU HÌNH CHO MODEL
-MODEL_PATH = "tomato_cnn_model.h5"
-CONFIDENCE_THRESHOLD = 0.6
-GREEN_RATIO_THRESHOLD = 0.30 #Điều chỉnh tỷ lệ nhận diện ảnh ko phải cà chua
+# THAM SỐ CẤU HÌNH (Giữ nguyên)
+MODEL_PATH = "best.pt"
+MODEL_CONFIDENCE_THRESHOLD = 0.25
+UI_CONFIDENCE_THRESHOLD = 0.60
+GREEN_RATIO_THRESHOLD = 0.30
 
-# LOAD MODEL & LABELS GỐC
+# LOAD MODEL (Giữ nguyên)
 @st.cache_resource(show_spinner="Đang tải model nhận dạng...")
-def load_model_from_path(model_path):
+def load_yolo_model(model_path):
     try:
-        model = tf.keras.models.load_model(model_path)
-        return model
+        model_obj = YOLO(model_path)
+        if not hasattr(model_obj, 'names') or not isinstance(model_obj.names, (list, dict)):
+             st.error("Lỗi: Model YOLO không có thuộc tính 'names' hợp lệ.")
+             return None
+        return model_obj
     except Exception as e:
-        st.error(f"Lỗi khi tải model: {e}")
-        st.error(f"Hãy đảm bảo file model '{model_path}' tồn tại trong cùng thư mục với app.py hoặc cung cấp đường dẫn chính xác.")
+        st.error(f"Lỗi khi tải model YOLO: {e}")
         return None
+model = load_yolo_model(MODEL_PATH)
 
-@st.cache_data
-def load_original_class_names():
-    return [
-        'Tomato___Bacterial_spot', 'Tomato___Early_blight', 'Tomato___Late_blight',
-        'Tomato___Leaf_Mold', 'Tomato___Septoria_leaf_spot',
-        'Tomato___Spider_mites Two-spotted_spider_mite', 'Tomato___Target_Spot',
-        'Tomato___Tomato_Yellow_Leaf_Curl_Virus', 'Tomato___Tomato_mosaic_virus',
-        'Tomato___healthy'
-    ]
-
-model = load_model_from_path(MODEL_PATH)
-original_class_names = load_original_class_names()
-class_name_keys = [name.replace("Tomato___", "") for name in original_class_names]
-
-# HÀM XỬ LÝ
-def preprocess_image(image: Image.Image, target_size=(128, 128)):
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-    image_resized = image.resize(target_size)
-    img_array = tf.keras.preprocessing.image.img_to_array(image_resized)
-    img_array = img_array / 255.0
-    img_array = tf.expand_dims(img_array, 0)
-    return img_array
-
+# HÀM XỬ LÝ (Giữ nguyên)
 def check_green_ratio(image: Image.Image):
     img_array = np.array(image.convert('RGB'))
     green_pixels = np.sum((img_array[:,:,1] > img_array[:,:,0]) & \
@@ -214,156 +182,203 @@ def check_green_ratio(image: Image.Image):
     return ratio
 
 def predict_and_analyze(image_input: Image.Image):
-    if model is None:
-        return 'MODEL_ERROR', None, 0.0
-
+    if model is None or not hasattr(model, 'names'):
+        return 'MODEL_ERROR', "Model chưa được tải hoặc không hợp lệ.", 0.0
     green_pixel_ratio = check_green_ratio(image_input)
     if green_pixel_ratio < GREEN_RATIO_THRESHOLD:
         return 'LOW_GREEN', f"{green_pixel_ratio*100:.1f}%", 0.0
-
     try:
-        processed_image = preprocess_image(image_input)
-        prediction_probabilities = model.predict(processed_image, verbose=0)[0]
-        predicted_index = np.argmax(prediction_probabilities)
-        confidence = float(prediction_probabilities[predicted_index])
-        predicted_class_key = class_name_keys[predicted_index]
-        return 'OK', predicted_class_key, confidence
+        results = model.predict(image_input, verbose=False, conf=MODEL_CONFIDENCE_THRESHOLD)
+        if results and results[0].boxes.shape[0] > 0:
+            boxes = results[0].boxes.cpu().numpy()
+            highest_conf_idx = np.argmax(boxes.conf)
+            predicted_class_index = int(boxes.cls[highest_conf_idx])
+            confidence = float(boxes.conf[highest_conf_idx])
+            turkish_class_name = ""
+            if isinstance(model.names, dict):
+                turkish_class_name = model.names.get(predicted_class_index)
+            elif isinstance(model.names, list):
+                 if 0 <= predicted_class_index < len(model.names):
+                    turkish_class_name = model.names[predicted_class_index]
+            if not turkish_class_name:
+                 return 'PREDICTION_ERROR', f"Không thể lấy tên lớp cho index {predicted_class_index}.", 0.0
+            predicted_class_key_for_disease_info = TURKISH_TO_ENGLISH_CLASS_MAP.get(turkish_class_name)
+            if predicted_class_key_for_disease_info is None:
+                return 'CLASS_KEY_MISMATCH', f"Lớp '{turkish_class_name}' (từ model) không có trong ánh xạ.", confidence
+            if predicted_class_key_for_disease_info not in disease_info:
+                 return 'CLASS_KEY_MISMATCH', f"Thông tin cho '{predicted_class_key_for_disease_info}' (sau ánh xạ) không tồn tại.", confidence
+            return 'OK', predicted_class_key_for_disease_info, confidence
+        else:
+            return 'NO_DETECTION', "Không phát hiện bệnh nào rõ ràng.", 0.0
     except Exception as e:
-        return 'PREDICTION_ERROR', "Lỗi xử lý model .", 0.0
+        return 'PREDICTION_ERROR', f"Lỗi xử lý model: {str(e)}", 0.0
 
-# GIAO DIỆN 
+def load_image_from_url(url):
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        image = Image.open(io.BytesIO(response.content))
+        return image
+    except requests.exceptions.RequestException as e:
+        st.error(f"Lỗi tải ảnh từ URL: {e}")
+        return None
+    except IOError:
+        st.error("Lỗi: URL không trỏ đến file ảnh hợp lệ hoặc định dạng ảnh không được hỗ trợ.")
+        return None
+
+# GIAO DIỆN
 if model is None:
-    st.error("Không thể tải Model. Ứng dụng không thể hoạt động. Vui lòng kiểm tra lại đường dẫn hoặc file model.")
+    st.error("Không thể tải Model YOLOv8. Ứng dụng không thể hoạt động.")
 else:
     if 'last_analysis' not in st.session_state:
-        st.session_state.last_analysis = {"status": None, "class_key": None, "confidence": None, "error_detail": None, "file_id": None}
+        st.session_state.last_analysis = {"status": None, "class_key": None, "confidence": None, "error_detail": None, "input_id": None}
 
     col1, col2 = st.columns([1, 2])
 
-    with col1:
-        st.header("🖼️ Ảnh Lá Cà Chua")
-        uploaded_file = st.file_uploader(
-            "Tải ảnh lên tại đây (tự động phân tích):",
-            type=["jpg", "jpeg", "png"],
-            key="file_uploader_key" 
+    with col1: # Cột nhập liệu (Giữ nguyên)
+        st.header("🖼️ Chọn Ảnh Đầu Vào")
+        input_method = st.radio(
+            "Chọn phương thức nhập ảnh:",
+            ('Tải ảnh lên', 'Nhập URL ảnh'),
+            key='input_method_radio',
+            horizontal=True # Hiển thị radio button nằm ngang cho gọn
         )
+        image_to_analyze = None
+        current_input_id = None
+        if input_method == 'Tải ảnh lên':
+            uploaded_file = st.file_uploader("Tải ảnh lá cà chua tại đây:", type=["jpg", "jpeg", "png"], key="file_uploader_key")
+            if uploaded_file is not None:
+                current_input_id = uploaded_file.name + str(uploaded_file.size)
+                if st.session_state.last_analysis["input_id"] != current_input_id:
+                    try: image_to_analyze = Image.open(uploaded_file)
+                    except Exception as e:
+                        st.error(f"Lỗi khi mở file ảnh: {e}")
+                        st.session_state.last_analysis = {"status": "IMAGE_ERROR", "error_detail": str(e), "input_id": current_input_id}
+                else:
+                    try: image_to_analyze = Image.open(uploaded_file)
+                    except: pass
+                if image_to_analyze: st.image(image_to_analyze, caption="Ảnh đã chọn", use_container_width=True)
+        elif input_method == 'Nhập URL ảnh':
+            image_url = st.text_input("Nhập URL của ảnh lá cà chua:", key="image_url_input", placeholder="https://example.com/image.jpg")
+            if st.button("Phân tích từ URL", key="analyze_url_button", use_container_width=True): # Nút rộng hơn
+                if image_url:
+                    current_input_id = image_url
+                    # Luôn phân tích lại khi nhấn nút, không cần so sánh input_id ở đây nữa
+                    with st.spinner("Đang tải và phân tích ảnh từ URL..."):
+                        image_to_analyze = load_image_from_url(image_url)
+                    if image_to_analyze: st.image(image_to_analyze, caption="Ảnh từ URL", use_container_width=True)
+                else: st.warning("Vui lòng nhập URL ảnh.")
+        
+        trigger_analysis = False
+        if image_to_analyze and current_input_id:
+            if st.session_state.last_analysis["input_id"] != current_input_id:
+                trigger_analysis = True
+            # Nếu là URL và nút được nhấn, cũng trigger (đã xử lý ngầm khi image_to_analyze có giá trị từ nút URL)
+            # Nếu là file upload, việc image_to_analyze có giá trị và input_id thay đổi là đủ trigger
+        
+        if trigger_analysis:
+            with st.spinner("Đang phân tích ảnh..."):
+                status, result_data, confidence_or_ratio = predict_and_analyze(image_to_analyze)
+            if status == 'LOW_GREEN':
+                st.session_state.last_analysis = {"status": status, "error_detail": result_data, "input_id": current_input_id}
+            elif status == 'OK':
+                st.session_state.last_analysis = {"status": status, "class_key": result_data, "confidence": confidence_or_ratio, "input_id": current_input_id}
+            elif status in ['NO_DETECTION', 'CLASS_KEY_MISMATCH']:
+                 st.session_state.last_analysis = {"status": status, "confidence": confidence_or_ratio if status == 'CLASS_KEY_MISMATCH' else None, "error_detail": result_data, "input_id": current_input_id}
+            else: 
+                st.session_state.last_analysis = {"status": status, "error_detail": result_data if result_data else "Lỗi không xác định.", "input_id": current_input_id}
+        
+        if input_method == 'Tải ảnh lên' and uploaded_file is None and st.session_state.last_analysis["input_id"] is not None:
+             if not (st.session_state.last_analysis["input_id"] and st.session_state.last_analysis["input_id"].startswith("http")):
+                st.session_state.last_analysis = {"status": None, "input_id": None}
 
-        if uploaded_file is not None:
-            current_file_id = uploaded_file.file_id 
-            if st.session_state.last_analysis["file_id"] != current_file_id:
-                try:
-                    image = Image.open(uploaded_file)
-                    st.image(image, caption="Ảnh đã tải lên", use_container_width=True)
-                    with st.spinner("Đang phân tích ảnh..."):
-                        status, result_data, confidence_or_ratio = predict_and_analyze(image)
-
-                    # Update session state with new analysis results
-                    if status == 'LOW_GREEN':
-                        st.session_state.last_analysis = {"status": status, "class_key": None, "confidence": None, "error_detail": result_data, "file_id": current_file_id}
-                    elif status == 'OK':
-                        st.session_state.last_analysis = {"status": status, "class_key": result_data, "confidence": confidence_or_ratio, "error_detail": None, "file_id": current_file_id}
-                    else: # MODEL_ERROR or PREDICTION_ERROR
-                        st.session_state.last_analysis = {"status": status, "class_key": None, "confidence": None, "error_detail": result_data if result_data else "Lỗi hệ thống không xác định.", "file_id": current_file_id}
-                        if status == 'MODEL_ERROR': # Specific message for model error during predict
-                             st.error("Lỗi: Model nhận dạng không thể thực hiện dự đoán lúc này.")
-
-                except Exception as e:
-                    st.error(f"Lỗi khi mở hoặc xử lý ảnh: {e}")
-                    st.session_state.last_analysis = {"status": "IMAGE_ERROR", "class_key": None, "confidence": None, "error_detail": str(e), "file_id": current_file_id}
-            else:
-                try:
-                    image = Image.open(uploaded_file) 
-                    st.image(image, caption="Ảnh đã tải lên (kết quả cũ)", use_container_width=True)
-                except Exception as e:
-                    st.error(f"Lỗi khi hiển thị lại ảnh: {e}")
-                    st.session_state.last_analysis = {"status": "IMAGE_ERROR", "class_key": None, "confidence": None, "error_detail": str(e), "file_id": current_file_id}
-
-
-        elif st.session_state.last_analysis["file_id"] is not None: # File was removed
-            st.session_state.last_analysis = {"status": None, "class_key": None, "confidence": None, "error_detail": None, "file_id": None}
-
-
-    with col2:
-        st.header("📊 Kết quả Phân Tích")
+    with col2: # Cột hiển thị kết quả
+        st.header("📊 Kết quả Phân Tích và Khuyến Nghị")
         analysis_result = st.session_state.last_analysis
 
-        if analysis_result["status"] == 'OK':
+        if analysis_result.get("status") == 'OK':
             predicted_class_key = analysis_result["class_key"]
             confidence = analysis_result["confidence"]
-            display_confidence = confidence * 100
+            display_confidence_percent = confidence * 100
 
-            if confidence < CONFIDENCE_THRESHOLD:
+            if predicted_class_key not in disease_info:
+                st.error(f"Lỗi: Không tìm thấy thông tin cho bệnh '{predicted_class_key}'.")
+            elif confidence <= UI_CONFIDENCE_THRESHOLD:
                 st.warning(
-                    f"**Độ tin cậy thấp ({display_confidence:.2f}%). Model không chắc chắn về kết quả này.**"
+                    f"Độ tin cậy của dự đoán là **{display_confidence_percent:.2f}%**, "
+                    f"không vượt qua ngưỡng **{UI_CONFIDENCE_THRESHOLD*100:.0f}%** để hiển thị chi tiết."
                 )
+                info_low_conf = disease_info[predicted_class_key]
                 st.info(
-                    "Nguyên nhân có thể là:\n"
-                    "- Ảnh chụp chưa rõ nét, thiếu sáng, hoặc góc chụp chưa tối ưu.\n"
-                    "- Triệu chứng bệnh không điển hình hoặc bệnh không nằm trong danh mục model được huấn luyện.\n\n"
-                    "**Gợi ý:** Vui lòng thử lại với ảnh khác, chụp rõ hơn, hoặc tham khảo ý kiến chuyên gia."
+                    f"Dựa trên dự đoán với độ tin cậy thấp, bệnh có thể là: **{info_low_conf['vietnamese_name']}** (Tên khoa học: *{info_low_conf['scientific_name_en']}*)."
+                    "\n\nVui lòng thử lại với ảnh rõ nét hơn, hoặc tham khảo ý kiến chuyên gia để có chẩn đoán chính xác."
                 )
-            else:
-                info = disease_info.get(predicted_class_key)
-                if info:
-                    st.success(f"**Bệnh dự đoán: {info['vietnamese_name']}**")
-                    st.markdown(f"*(Tên khoa học: {info['scientific_name_en']})*")
-                    st.info(f"Độ tin cậy: {display_confidence:.2f}%")
+            else: # Độ tin cậy > 60% và có thông tin bệnh
+                info = disease_info[predicted_class_key]
+                
+                st.subheader(f"🔍 Chẩn đoán: {info['vietnamese_name']}")
+                st.markdown(f"   - **Tên khoa học (Tiếng Anh):** *{info['scientific_name_en']}*")
+                st.markdown(f"   - **Độ tin cậy của chẩn đoán:** **{display_confidence_percent:.2f}%**")
 
-                    if predicted_class_key != 'healthy':
-                        st.subheader("⚠️ Gợi ý xử lý và khắc phục:")
-                        with st.expander("**Biện pháp hóa học (Tham khảo)**", expanded=True):
-                            if info['remedies']:
-                                for remedy in info['remedies']:
-                                    st.write(f"• {remedy}")
-                            else:
-                                st.write("• Không có gợi ý thuốc cụ thể cho trường hợp này.")
-
-                        with st.expander("**Biện pháp canh tác và phòng ngừa**", expanded=True):
-                            if info['actions']:
-                                 for action in info['actions']:
-                                    st.write(f"• {action}")
-                            else:
-                                st.write("• Không có gợi ý biện pháp cụ thể.")
-                        st.warning(
-                            """
-                            **Lưu ý quan trọng (Thuốc BVTV & Biện pháp canh tác):**
-                            \nCác thông tin gợi ý chỉ mang tính chất **tham khảo**. Hiệu quả thực tế phụ thuộc vào nhiều yếu tố.
-                            \nĐể có giải pháp phù hợp và hiệu quả nhất:
-                            \n1. Luôn đọc kỹ và tuân thủ hướng dẫn sử dụng trên nhãn thuốc BVTV.
-                            \n2. Áp dụng nguyên tắc 4 đúng và đảm bảo thời gian cách ly.
-                            \n3. **Hãy ưu tiên tham vấn ý kiến từ cán bộ kỹ thuật nông nghiệp hoặc chuyên gia bảo vệ thực vật tại địa phương của bạn.**
-                            """
-                        )
-                    else:
-                        st.balloons()
-                        st.write("🎉 Chúc mừng! Cây cà chua của bạn trông khỏe mạnh.")
-                        info_healthy = disease_info.get('healthy')
-                        if info_healthy:
-                            with st.expander("**Lời khuyên duy trì sức khỏe cho cây**", expanded=True):
-                                if info_healthy['actions']:
-                                    for action in info_healthy['actions']:
-                                        st.write(f"• {action}")
-                    st.markdown("---")
+                # Hiển thị Dấu hiệu nhận dạng bệnh
+                if info.get('identification_signs'):
+                    with st.expander("🚨 **Dấu hiệu nhận dạng chính**", expanded=True):
+                        for sign in info['identification_signs']:
+                            st.write(f"• {sign}")
                 else:
-                    st.error(f"Lỗi hệ thống: Không tìm thấy thông tin chi tiết cho mã bệnh '{predicted_class_key}'.")
-                    st.info(f"Độ tin cậy (nếu có): {display_confidence:.2f}%")
+                    st.info("Hiện chưa có thông tin chi tiết về dấu hiệu nhận dạng cho bệnh này trong cơ sở dữ liệu.")
 
-        elif analysis_result["status"] == 'LOW_GREEN':
-            st.error(
-                f"Ảnh không phù hợp! Có thể đang không phải đây là ảnh và cà chua ! "
-                "Ảnh cần rõ nét hơn và tập trung vào lá cây. Vui lòng thử lại với ảnh khác hoặc liên hệ tác giả để nếu đây là nhầm lẫn"
-            )
-            st.info("Yêu cầu ảnh chụp rõ lá cà chua, chiếm phần lớn diện tích ảnh, với đủ ánh sáng và nền không quá phức tạp.")
-        elif analysis_result["status"] == 'MODEL_ERROR':
-            st.error("Lỗi: Model nhận dạng không thể thực hiện dự đoán. Vui lòng kiểm tra thông báo lỗi khi tải model (nếu có).")
-        elif analysis_result["status"] == 'PREDICTION_ERROR':
-             st.error(f"Lỗi trong quá trình phân tích ảnh. Chi tiết: {analysis_result['error_detail']}. Vui lòng thử lại.")
-        elif analysis_result["status"] == 'IMAGE_ERROR':
-            st.error(f"Lỗi xử lý ảnh: {analysis_result['error_detail']}. Vui lòng chọn file ảnh hợp lệ (JPG, JPEG, PNG).")
+                if predicted_class_key != 'healthy':
+                    st.markdown("---")
+                    st.subheader("💡 Khuyến Nghị Quản Lý Bệnh")
+                    with st.expander("💊 **Biện pháp hóa học (Tham khảo)**", expanded=True):
+                        if info.get('remedies'):
+                            for remedy in info['remedies']: st.write(f"• {remedy}")
+                        else: st.write("• Không có gợi ý thuốc cụ thể cho trường hợp này.")
+                    
+                    with st.expander("🌱 **Biện pháp canh tác và phòng ngừa tổng hợp**", expanded=True):
+                        if info.get('actions'):
+                             for action in info['actions']: st.write(f"• {action}")
+                        else: st.write("• Không có gợi ý biện pháp cụ thể.")
+                    
+                    st.warning( # Giữ nguyên Disclaimer quan trọng
+                        """
+                        **LƯU Ý QUAN TRỌNG VỀ THUỐC BVTV & BIỆN PHÁP CANH TÁC:**
+                        \nThông tin gợi ý trên chỉ mang tính chất **tham khảo**. Hiệu quả thực tế phụ thuộc vào nhiều yếu tố (điều kiện thời tiết, giống cây, áp lực bệnh cụ thể, v.v.).
+                        \n1. **Luôn đọc kỹ và tuân thủ tuyệt đối hướng dẫn sử dụng trên nhãn thuốc BVTV.**
+                        \n2. Áp dụng nguyên tắc "4 đúng" (đúng thuốc, đúng lúc, đúng liều lượng & nồng độ, đúng cách) và đảm bảo thời gian cách ly.
+                        \n3. **Hãy ưu tiên tham vấn ý kiến từ cán bộ kỹ thuật nông nghiệp hoặc chuyên gia bảo vệ thực vật tại địa phương của bạn để có giải pháp phù hợp, an toàn và hiệu quả nhất.**
+                        \n4. Cân nhắc các biện pháp quản lý dịch hại tổng hợp (IPM) để giảm sự phụ thuộc vào hóa chất và bảo vệ môi trường.
+                        """
+                    )
+                else: # Healthy và độ tin cậy > 60%
+                    st.balloons()
+                    st.success("🎉 **Cây cà chua của bạn được chẩn đoán là khỏe mạnh!**")
+                    info_healthy = disease_info.get('healthy')
+                    if info_healthy and info_healthy.get('actions'):
+                        with st.expander("**Lời khuyên duy trì sức khỏe cho cây**", expanded=True):
+                            for action in info_healthy['actions']:
+                                st.write(f"• {action}")
+                st.markdown("---")
+
+        elif analysis_result.get("status") == 'LOW_GREEN':
+            st.error(f"Ảnh có thể không phải là lá cà chua khả năng là lá cây: {analysis_result.get('error_detail','')}), vui lòng thử lại với ảnh khác hoặc cung cấp ảnh gần lá hơn.")
+        elif analysis_result.get("status") == 'NO_DETECTION':
+            st.warning(f"Không phát hiện đối tượng bệnh nào với độ tin cậy trên ngưỡng ({MODEL_CONFIDENCE_THRESHOLD*100:.0f}%). "
+                       "Ảnh có thể là lá khỏe mạnh hoặc triệu chứng không rõ ràng.")
+        elif analysis_result.get("status") == 'CLASS_KEY_MISMATCH':
+            st.error(f"Lỗi ánh xạ lớp: {analysis_result.get('error_detail','')}. Vui lòng kiểm tra cấu hình tên lớp và ánh xạ trong code.")
+            if analysis_result.get('confidence') is not None:
+                st.info(f"Độ tin cậy (nếu có): {analysis_result['confidence']*100:.2f}%")
+        elif analysis_result.get("status") == 'MODEL_ERROR':
+            st.error(f"Lỗi Model: {analysis_result.get('error_detail','')}.")
+        elif analysis_result.get("status") == 'PREDICTION_ERROR':
+             st.error(f"Lỗi phân tích ảnh: {analysis_result.get('error_detail','')}.")
+        elif analysis_result.get("status") == 'IMAGE_ERROR':
+            st.error(f"Lỗi xử lý ảnh đầu vào: {analysis_result.get('error_detail','')}.")
         else:
             if model is not None:
-                st.info("Chào mừng bạn! Hãy tải ảnh lá cà chua lên ở cột bên trái để bắt đầu phân tích.")
-
+                 st.info("Chào mừng! Vui lòng chọn ảnh lá cà chua từ máy tính hoặc cung cấp URL để bắt đầu chẩn đoán.")
 
 st.markdown("---")
-st.caption("Ứng dụng phân loại bệnh lá cà chua ( Depp-Learning - Nhóm 9 )")
+st.caption("Ứng dụng Chẩn đoán bệnh lá cà chua (Deep Learning - YOLOv8) | Phát triển bởi Nhóm 9")
