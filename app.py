@@ -6,7 +6,7 @@ import io
 import requests
 
 st.set_page_config(page_title="Dự đoán bệnh lá cà chua", layout="wide")
-st.title("🧪 Chẩn đoán bệnh trên lá Cà Chua qua ảnh (YOLOv8)") # Tiêu đề cập nhật
+st.title("Chẩn đoán bệnh trên lá Cà Chua") 
 st.write(
     "Tải lên ảnh lá cà chua hoặc nhập URL ảnh. Hệ thống sẽ phân tích và cung cấp thông tin chi tiết về bệnh (nếu có), "
     "bao gồm dấu hiệu nhận dạng, tên khoa học, và các biện pháp quản lý tham khảo."
@@ -236,7 +236,7 @@ else:
     col1, col2 = st.columns([1, 2])
 
     with col1: # Cột nhập liệu (Giữ nguyên)
-        st.header("🖼️ Chọn Ảnh Đầu Vào")
+        st.header("Chọn Ảnh")
         input_method = st.radio(
             "Chọn phương thức nhập ảnh:",
             ('Tải ảnh lên', 'Nhập URL ảnh'),
@@ -293,7 +293,7 @@ else:
                 st.session_state.last_analysis = {"status": None, "input_id": None}
 
     with col2: # Cột hiển thị kết quả
-        st.header("📊 Kết quả Phân Tích và Khuyến Nghị")
+        st.header("Kết quả Phân Tích và Khuyến Nghị")
         analysis_result = st.session_state.last_analysis
 
         if analysis_result.get("status") == 'OK':
@@ -316,13 +316,13 @@ else:
             else: # Độ tin cậy > 60% và có thông tin bệnh
                 info = disease_info[predicted_class_key]
                 
-                st.subheader(f"🔍 Chẩn đoán: {info['vietnamese_name']}")
+                st.subheader(f"Chẩn đoán: {info['vietnamese_name']}")
                 st.markdown(f"   - **Tên khoa học (Tiếng Anh):** *{info['scientific_name_en']}*")
                 st.markdown(f"   - **Độ tin cậy của chẩn đoán:** **{display_confidence_percent:.2f}%**")
 
                 # Hiển thị Dấu hiệu nhận dạng bệnh
                 if info.get('identification_signs'):
-                    with st.expander("🚨 **Dấu hiệu nhận dạng chính**", expanded=True):
+                    with st.expander("**Dấu hiệu nhận dạng chính**", expanded=True):
                         for sign in info['identification_signs']:
                             st.write(f"• {sign}")
                 else:
@@ -330,13 +330,13 @@ else:
 
                 if predicted_class_key != 'healthy':
                     st.markdown("---")
-                    st.subheader("💡 Khuyến Nghị Quản Lý Bệnh")
-                    with st.expander("💊 **Biện pháp hóa học (Tham khảo)**", expanded=True):
+                    st.subheader("Khuyến Nghị Quản Lý Bệnh")
+                    with st.expander("**Biện pháp hóa học (Tham khảo)**", expanded=True):
                         if info.get('remedies'):
                             for remedy in info['remedies']: st.write(f"• {remedy}")
                         else: st.write("• Không có gợi ý thuốc cụ thể cho trường hợp này.")
                     
-                    with st.expander("🌱 **Biện pháp canh tác và phòng ngừa tổng hợp**", expanded=True):
+                    with st.expander("**Biện pháp canh tác và phòng ngừa tổng hợp**", expanded=True):
                         if info.get('actions'):
                              for action in info['actions']: st.write(f"• {action}")
                         else: st.write("• Không có gợi ý biện pháp cụ thể.")
@@ -353,7 +353,7 @@ else:
                     )
                 else: # Healthy và độ tin cậy > 60%
                     st.balloons()
-                    st.success("🎉 **Cây cà chua của bạn được chẩn đoán là khỏe mạnh!**")
+                    st.success("**Cây cà chua của bạn được chẩn đoán là khỏe mạnh!**")
                     info_healthy = disease_info.get('healthy')
                     if info_healthy and info_healthy.get('actions'):
                         with st.expander("**Lời khuyên duy trì sức khỏe cho cây**", expanded=True):
